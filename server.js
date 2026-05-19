@@ -1,16 +1,6 @@
-/**
- * VoiceCallApp - Sinyalizasyon Sunucusu v2
- * Kullanıcı adı kaydı + çevrimiçi listesi + doğrudan arama
- *
- * Kurulum:
- *   npm install ws
- *   node server.js
- */
-
 const WebSocket = require('ws');
 const wss = new WebSocket.Server({ port: 8080 });
 
-// Kayıtlı kullanıcılar: { username -> WebSocket }
 const onlineUsers = new Map();
 
 console.log("Sunucu port 8080'de çalışıyor...");
@@ -34,7 +24,6 @@ wss.on('connection', (ws) => {
     try { msg = JSON.parse(data); } catch { return; }
     const { type } = msg;
 
-    // ── Kullanıcı adıyla kayıt ol ──────────────────────────
     if (type === 'register') {
       const username = (msg.username || '').trim().toLowerCase();
       if (!username || username.length < 2 || username.length > 20) {
@@ -45,10 +34,16 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify({ type: 'register_error', reason: 'Sadece harf, rakam ve _ kullanilabilir.' }));
         return;
       }
+
+      // Aynı kullanıcı adı varsa eski bağlantıyı sil
       if (onlineUsers.has(username)) {
-        ws.send(JSON.stringify({ type: 'register_error', reason: 'Bu kullanici adi zaten kullanimda.' }));
-        return;
+        const oldWs = onlineUsers.get(username);
+        if (oldWs !== ws) {
+          onlineUsers.delete(username);
+          try { oldWs.close(); } catch(e) {}
+        }
       }
+
       myUsername = username;
       onlineUsers.set(username, ws);
       ws.send(JSON.stringify({ type: 'register_ok', username }));
@@ -62,14 +57,12 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    // ── Kullanıcı ara ─────────────────────────────────────
     if (type === 'search') {
       const target = (msg.username || '').trim().toLowerCase();
       ws.send(JSON.stringify({ type: 'search_result', username: target, online: onlineUsers.has(target) }));
       return;
     }
 
-    // ── Arama isteği gönder ───────────────────────────────
     if (type === 'call_request') {
       const targetWs = onlineUsers.get(msg.to);
       if (!targetWs || targetWs.readyState !== WebSocket.OPEN) {
@@ -80,7 +73,6 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    // ── Aramayı kabul / reddet ────────────────────────────
     if (type === 'call_accept' || type === 'call_reject') {
       const targetWs = onlineUsers.get(msg.to);
       if (targetWs?.readyState === WebSocket.OPEN) {
@@ -89,7 +81,6 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    // ── WebRTC sinyalizasyon (offer / answer / ice) ───────
     if (['offer', 'answer', 'ice_candidate', 'call_end'].includes(type)) {
       const targetWs = onlineUsers.get(msg.to);
       if (targetWs?.readyState === WebSocket.OPEN) {
@@ -101,9 +92,12 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     if (myUsername) {
-      onlineUsers.delete(myUsername);
-      broadcast({ type: 'online_list', users: getOnlineList() });
-      console.log(`- ${myUsername} ayrildi (${onlineUsers.size} cevrimici)`);
+      // Sadece bu WebSocket hâlâ aktif kullanıcıya aitse sil
+      if (onlineUsers.get(myUsername) === ws) {
+        onlineUsers.delete(myUsername);
+        broadcast({ type: 'online_list', users: getOnlineList() });
+        console.log(`- ${myUsername} ayrildi (${onlineUsers.size} cevrimici)`);
+      }
       myUsername = null;
     }
   });
